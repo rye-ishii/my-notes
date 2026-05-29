@@ -12,7 +12,6 @@ Aplicativo mobile desenvolvido em React Native (Expo) que permite capturar ou se
 - **Solicita permissão** de localização ao primeiro uso
 - **Captura automática** do GPS no momento do cadastro
 - **Exibição das coordenadas** nos cards da galeria
-- **Fallback** para salvar sem localização (quando indisponível)
 
 ### 3. Galeria de Fotos
 - **Layout em grid** com 2 colunas
