@@ -5,24 +5,26 @@ import * as Location from "expo-location";
 import { useFocusEffect } from "expo-router";
 import React, { useCallback, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   FlatList, Image, Modal, StyleSheet,
   Text, TextInput, TouchableOpacity, View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
- 
+
 const repo = new PhotosRepository();
 const NUM_COLUMNS = 2;
 const CARD_SIZE = (Dimensions.get("window").width - 48) / 2;
- 
+
 export default function GalleryScreen() {
   const [photos, setPhotos] = useState<PhotoType[]>([]);
   const [search, setSearch] = useState("");
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
- 
+  const [isSaving, setIsSaving] = useState(false); // Estado para evitar duplo clique
+
   function loadPhotos() {
     try {
       setPhotos(repo.getAll());
@@ -30,89 +32,133 @@ export default function GalleryScreen() {
       Alert.alert("Erro", "Falha ao carregar as fotos");
     }
   }
- 
+
   useFocusEffect(useCallback(() => {
     initDatabase();
     loadPhotos();
   }, []));
- 
+
   const filtered = photos.filter((p) =>
     p.title.toLowerCase().includes(search.toLowerCase())
   );
- 
+
+  // Função otimizada para tirar foto com qualidade reduzida
   async function takePhoto() {
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
-    if (!granted) { Alert.alert("Permissão necessária", "Permita o acesso à câmera"); return; }
-    const result = await ImagePicker.launchCameraAsync({ allowsEditing: false, quality: 0.7 });
-    if (!result.canceled) setSelectedImage(result.assets[0].uri);
+    if (!granted) { 
+      Alert.alert("Permissão necessária", "Permita o acesso à câmera"); 
+      return; 
+    }
+    
+    const result = await ImagePicker.launchCameraAsync({ 
+      allowsEditing: true,  // Permitir edição rápida
+      quality: 0.4,  // Qualidade reduzida para arquivo menor (mais rápido)
+      base64: false,  // Não gerar base64 (mais rápido)
+      exif: false,  // Não extrair metadados (mais rápido)
+    });
+    
+    if (!result.canceled) {
+      setSelectedImage(result.assets[0].uri);
+    }
   }
- 
+
+  // Função otimizada para escolher da galeria
   async function pickFromGallery() {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!granted) { Alert.alert("Permissão necessária", "Permita o acesso à galeria"); return; }
-    const result = await ImagePicker.launchImageLibraryAsync({ allowsEditing: false, quality: 0.7 });
+    if (!granted) { 
+      Alert.alert("Permissão necessária", "Permita o acesso à galeria"); 
+      return; 
+    }
+    
+    const result = await ImagePicker.launchImageLibraryAsync({ 
+      allowsEditing: false, 
+      quality: 0.4,  // Mesma qualidade reduzida
+    });
+    
     if (!result.canceled) setSelectedImage(result.assets[0].uri);
   }
- 
+
+  // Função savePhoto otimizada e rápida
   async function savePhoto() {
     if (!title.trim() || !selectedImage) {
-      Alert.alert("Atenção", "Preencha o título");
+      Alert.alert("Atenção", "Preencha o título e selecione uma imagem");
       return;
     }
+    
+    if (isSaving) return; // Evita duplo clique
+    setIsSaving(true);
+    
     try {
       let latitude: number | null = null;
       let longitude: number | null = null;
+      
+      // Tentar obter localização rapidamente com menor precisão
       const { granted, canAskAgain } = await Location.requestForegroundPermissionsAsync();
-      if (!granted) {
-        Alert.alert("Localização negada", canAskAgain
-          ? "Permita o acesso à localização para salvar a posição da foto."
-          : "Vá em Ajustes > Privacidade > Localização e permita o acesso ao app."
-        );
+      if (granted) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ 
+            accuracy: Location.Accuracy.Lowest, // Menor precisão = mais rápido
+            timeInterval: 3000 // Timeout de 3 segundos
+          });
+          latitude = loc.coords.latitude;
+          longitude = loc.coords.longitude;
+        } catch (locError) {
+          console.log("Erro ao obter localização:", locError);
+          // Continua salvando sem localização
+        }
       } else {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        latitude = loc.coords.latitude;
-        longitude = loc.coords.longitude;
+        // Não bloqueia o salvamento se a localização for negada
+        console.log("Permissão de localização negada");
       }
-      repo.create({ title, image_uri: selectedImage, latitude, longitude });
-      Alert.alert("Sucesso", latitude
-        ? `Foto salva!\n ${latitude.toFixed(5)}, ${longitude?.toFixed(5)}`
-        : "Foto salva sem localização."
+      
+      // Salvar no banco de dados
+      repo.create({ 
+        title: title.trim(), 
+        image_uri: selectedImage, 
+        latitude, 
+        longitude 
+      });
+      
+      // Feedback de sucesso
+      Alert.alert(
+        "Sucesso", 
+        latitude 
+          ? `✅ Foto salva com localização!\n📍 ${latitude.toFixed(5)}, ${longitude?.toFixed(5)}` 
+          : "⚠️ Foto salva (localização não disponível)"
       );
+      
+      // Limpar e fechar modal
       setTitle("");
       setSelectedImage(null);
       setModalVisible(false);
-      loadPhotos();
+      loadPhotos(); // Recarregar lista
+      
     } catch (e: any) {
       Alert.alert("Erro", `Falha ao salvar: ${e?.message ?? e}`);
+    } finally {
+      setIsSaving(false);
     }
   }
- 
+
   function deletePhoto(id: number) {
     Alert.alert("Excluir", "Remover esta foto?", [
       { text: "Cancelar", style: "cancel" },
       { text: "Excluir", style: "destructive", onPress: () => { repo.delete(id); loadPhotos(); } },
     ]);
   }
- 
+
   return (
     <SafeAreaView style={styles.container} edges={["bottom"]}>
- 
       <View style={styles.searchContainer}>
-        <Text style={styles.searchIcon}>⌕</Text>
         <TextInput
           style={styles.searchInput}
-          placeholder="Buscar por título..."
-          placeholderTextColor="#4A5070"
+          placeholder="Buscar fotos..."
+          placeholderTextColor="#8B7355"
           value={search}
           onChangeText={setSearch}
         />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch("")}>
-            <Text style={styles.searchClear}>✕</Text>
-          </TouchableOpacity>
-        )}
       </View>
- 
+
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id!.toString()}
@@ -120,12 +166,11 @@ export default function GalleryScreen() {
         contentContainerStyle={styles.grid}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>{search ? "🔍" : "📷"}</Text>
             <Text style={styles.emptyText}>
               {search ? "Nenhuma foto encontrada" : "Nenhuma foto ainda"}
             </Text>
             <Text style={styles.emptySubtext}>
-              {search ? `Sem resultados para "${search}"` : "Toque em + para adicionar uma foto!"}
+              {search ? `Sem resultados para "${search}"` : "Toque em + para adicionar uma foto"}
             </Text>
           </View>
         }
@@ -136,7 +181,6 @@ export default function GalleryScreen() {
             activeOpacity={0.9}
           >
             <Image source={{ uri: item.image_uri }} style={styles.cardImg} />
-            <View style={styles.cardOverlay} />
             <View style={styles.cardInfo}>
               <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
               <View style={styles.cardMeta}>
@@ -145,7 +189,7 @@ export default function GalleryScreen() {
                 </Text>
                 {item.latitude != null && (
                   <Text style={styles.cardCoords} numberOfLines={1}>
-                    📍 {item.latitude.toFixed(2)}, {item.longitude?.toFixed(2)}
+                    📍 {item.latitude.toFixed(5)}, {item.longitude?.toFixed(5)}
                   </Text>
                 )}
               </View>
@@ -153,101 +197,99 @@ export default function GalleryScreen() {
           </TouchableOpacity>
         )}
       />
- 
+
       <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)} activeOpacity={0.85}>
         <Text style={styles.fabTxt}>+</Text>
       </TouchableOpacity>
- 
+
       <Modal visible={modalVisible} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView style={styles.modal}>
           <View style={styles.modalHeader}>
-            <View>
-              <Text style={styles.modalEyebrow}>ADICIONAR</Text>
-              <Text style={styles.modalTitle}>Nova Foto</Text>
-            </View>
+            <Text style={styles.modalTitle}>Nova Foto</Text>
             <TouchableOpacity
               style={styles.closeBtn}
-              onPress={() => { setModalVisible(false); setSelectedImage(null); setTitle(""); }}
+              onPress={() => { setModalVisible(false); setSelectedImage(null); setTitle(""); setIsSaving(false); }}
             >
               <Text style={styles.modalClose}>✕</Text>
             </TouchableOpacity>
           </View>
- 
+
           <TextInput
             style={styles.input}
-            placeholder="Título da foto..."
-            placeholderTextColor="#4A5070"
+            placeholder="Título da foto"
+            placeholderTextColor="#8B7355"
             value={title}
             onChangeText={setTitle}
+            editable={!isSaving}
           />
- 
+
           <View style={styles.row}>
-            <TouchableOpacity style={styles.btn} onPress={takePhoto} activeOpacity={0.8}>
-              <Text style={styles.btnIcon}>📷</Text>
-              <Text style={styles.btnTxt}>Câmera</Text>
+            <TouchableOpacity 
+              style={styles.btn} 
+              onPress={takePhoto} 
+              activeOpacity={0.8}
+              disabled={isSaving}
+            >
+              <Text style={styles.btnTxt}>📷 Câmera</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={pickFromGallery} activeOpacity={0.8}>
-              <Text style={styles.btnIcon}>🖼️</Text>
-              <Text style={styles.btnTxt}>Galeria</Text>
+            <TouchableOpacity 
+              style={[styles.btn, styles.btnSecondary]} 
+              onPress={pickFromGallery} 
+              activeOpacity={0.8}
+              disabled={isSaving}
+            >
+              <Text style={styles.btnTxt}>🖼️ Galeria</Text>
             </TouchableOpacity>
           </View>
- 
+
           {selectedImage ? (
             <Image source={{ uri: selectedImage }} style={styles.preview} />
           ) : (
             <View style={styles.previewPlaceholder}>
-              <Text style={styles.previewIcon}>🖼</Text>
               <Text style={styles.previewLabel}>Nenhuma imagem selecionada</Text>
             </View>
           )}
- 
-          <TouchableOpacity style={styles.saveBtn} onPress={savePhoto} activeOpacity={0.85}>
-            <Text style={styles.saveBtnTxt}>Salvar Foto</Text>
+
+          <TouchableOpacity 
+            style={[styles.saveBtn, isSaving && styles.saveBtnDisabled]} 
+            onPress={savePhoto} 
+            activeOpacity={0.85}
+            disabled={isSaving}
+          >
+            {isSaving ? (
+              <ActivityIndicator color="#000000" />
+            ) : (
+              <Text style={styles.saveBtnTxt}>Salvar Foto</Text>
+            )}
           </TouchableOpacity>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
 }
- 
-const styles = StyleSheet.create({
 
+const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#080810",
+    backgroundColor: "#000000",
   },
- 
 
   searchContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#10101F",
+    backgroundColor: "#1A1A1A",
     marginHorizontal: 16,
-    marginTop: 16,
+    marginTop: 12,
     marginBottom: 8,
-    borderRadius: 16,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#1E1E38",
+    borderColor: "#3D2B1F",
     paddingHorizontal: 14,
-    height: 48,
-  },
-  searchIcon: {
-    fontSize: 18,
-    color: "#4A5070",
-    marginRight: 8,
+    height: 44,
+    justifyContent: "center",
   },
   searchInput: {
-    flex: 1,
-    color: "#CDD5F0",
-    fontSize: 15,
-    letterSpacing: 0.2,
+    color: "#FFFFFF",
+    fontSize: 14,
   },
-  searchClear: {
-    color: "#4A5070",
-    fontSize: 16,
-    paddingRight: 4,
-  },
- 
 
   grid: {
     paddingHorizontal: 8,
@@ -257,42 +299,24 @@ const styles = StyleSheet.create({
   card: {
     width: CARD_SIZE,
     margin: 8,
-    borderRadius: 18,
+    borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: "#10101F",
+    backgroundColor: "#1A1A1A",
     borderWidth: 1,
-    borderColor: "#1C1C35",
-    shadowColor: "#000",
-    shadowOpacity: 0.5,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    borderColor: "#3D2B1F",
   },
   cardImg: {
     width: "100%",
     height: CARD_SIZE,
-    backgroundColor: "#14142A",
-  },
-  
-  cardOverlay: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: CARD_SIZE * 0.45,
-    backgroundColor: "transparent",
-    
+    backgroundColor: "#2A2A2A",
   },
   cardInfo: {
     padding: 10,
-    paddingTop: 8,
-    backgroundColor: "#10101F",
   },
   cardTitle: {
-    fontWeight: "700",
+    fontWeight: "600",
     fontSize: 13,
-    color: "#E2E8FF",
-    letterSpacing: 0.1,
+    color: "#D2B48C",
     marginBottom: 4,
   },
   cardMeta: {
@@ -300,16 +324,12 @@ const styles = StyleSheet.create({
   },
   cardDate: {
     fontSize: 10,
-    color: "#4A5480",
-    letterSpacing: 0.3,
-    textTransform: "uppercase",
+    color: "#808080",
   },
   cardCoords: {
     fontSize: 10,
-    color: "#5A6490",
-    marginTop: 1,
+    color: "#8B7355",
   },
- 
 
   empty: {
     flex: 1,
@@ -318,109 +338,85 @@ const styles = StyleSheet.create({
     marginTop: 100,
     paddingHorizontal: 40,
   },
-  emptyIcon: {
-    fontSize: 52,
-    marginBottom: 16,
-    opacity: 0.6,
-  },
   emptyText: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: "#9AA3C8",
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#D2B48C",
     textAlign: "center",
-    letterSpacing: 0.2,
   },
   emptySubtext: {
     fontSize: 13,
-    color: "#3D4460",
+    color: "#808080",
     marginTop: 8,
     textAlign: "center",
-    lineHeight: 20,
   },
- 
-  
+
   fab: {
     position: "absolute",
     bottom: 36,
     right: 24,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "#4F52CC",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#D2B48C",
     justifyContent: "center",
     alignItems: "center",
-    shadowColor: "#4F52CC",
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 10,
     borderWidth: 1,
-    borderColor: "#6366F1",
+    borderColor: "#8B7355",
   },
   fabTxt: {
-    color: "#FFF",
-    fontSize: 32,
-    lineHeight: 38,
+    color: "#000000",
+    fontSize: 28,
+    lineHeight: 34,
     fontWeight: "300",
   },
- 
- 
+
   modal: {
     flex: 1,
-    backgroundColor: "#080810",
+    backgroundColor: "#000000",
     paddingHorizontal: 20,
     paddingTop: 8,
   },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-end",
+    alignItems: "center",
     marginBottom: 28,
     paddingTop: 12,
   },
-  modalEyebrow: {
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 2.5,
-    color: "#4F52CC",
-    marginBottom: 4,
-  },
   modalTitle: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: "#E2E8FF",
-    letterSpacing: -0.3,
+    fontSize: 28,
+    fontWeight: "700",
+    color: "#D2B48C",
   },
   closeBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#10101F",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#1A1A1A",
     borderWidth: 1,
-    borderColor: "#1E1E38",
+    borderColor: "#3D2B1F",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 2,
   },
   modalClose: {
     fontSize: 14,
-    color: "#4A5070",
+    color: "#808080",
     fontWeight: "600",
   },
- 
 
   input: {
-    backgroundColor: "#10101F",
-    height: 52,
-    borderRadius: 14,
+    backgroundColor: "#1A1A1A",
+    height: 50,
+    borderRadius: 8,
     paddingHorizontal: 16,
-    fontSize: 15,
+    fontSize: 14,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#1E1E38",
-    color: "#E2E8FF",
-    letterSpacing: 0.2,
+    borderColor: "#3D2B1F",
+    color: "#FFFFFF",
   },
+
   row: {
     flexDirection: "row",
     gap: 12,
@@ -428,80 +424,62 @@ const styles = StyleSheet.create({
   },
   btn: {
     flex: 1,
-    backgroundColor: "#14142B",
-    height: 50,
-    borderRadius: 14,
+    backgroundColor: "#1A1A1A",
+    height: 48,
+    borderRadius: 8,
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#4F52CC",
-    flexDirection: "row",
-    gap: 8,
+    borderColor: "#D2B48C",
   },
   btnSecondary: {
-    borderColor: "#7C3AED",
-    backgroundColor: "#130D20",
-  },
-  btnIcon: {
-    fontSize: 16,
+    borderColor: "#8B7355",
+    backgroundColor: "#0D0D0D",
   },
   btnTxt: {
-    color: "#CDD5F0",
-    fontWeight: "600",
+    color: "#D2B48C",
+    fontWeight: "500",
     fontSize: 14,
-    letterSpacing: 0.2,
   },
- 
 
   preview: {
     width: "100%",
     height: 210,
-    borderRadius: 16,
+    borderRadius: 8,
     marginBottom: 20,
-    backgroundColor: "#10101F",
+    backgroundColor: "#1A1A1A",
   },
   previewPlaceholder: {
     width: "100%",
     height: 210,
-    borderRadius: 16,
+    borderRadius: 8,
     marginBottom: 20,
-    backgroundColor: "#0C0C1C",
+    backgroundColor: "#0D0D0D",
     borderWidth: 1,
-    borderColor: "#1E1E38",
-    borderStyle: "dashed",
+    borderColor: "#3D2B1F",
     justifyContent: "center",
     alignItems: "center",
-    gap: 8,
-  },
-  previewIcon: {
-    fontSize: 40,
-    opacity: 0.35,
   },
   previewLabel: {
-    color: "#3D4460",
+    color: "#808080",
     fontSize: 13,
-    letterSpacing: 0.2,
   },
- 
 
   saveBtn: {
-    backgroundColor: "#4F52CC",
-    height: 54,
-    borderRadius: 16,
+    backgroundColor: "#D2B48C",
+    height: 52,
+    borderRadius: 8,
     justifyContent: "center",
     alignItems: "center",
-    shadowColor: "#4F52CC",
-    shadowOpacity: 0.45,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
     borderWidth: 1,
-    borderColor: "#6366F1",
+    borderColor: "#8B7355",
+  },
+  saveBtnDisabled: {
+    opacity: 0.5,
   },
   saveBtnTxt: {
-    color: "#FFF",
-    fontWeight: "700",
+    color: "#000000",
+    fontWeight: "600",
     fontSize: 16,
-    letterSpacing: 0.5,
   },
 });
